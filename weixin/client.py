@@ -26,18 +26,30 @@ def runner(coro):
 class Client(object):
     """
     基础客户端
+
+    基本的使用形式
+
+    ::
+
+        with Client('blocking') as client:
+            async with client.session.get('url', params={"user_id": 1}) as resp:
+                print(await resp.text())
+
+    :param mode: 运行模式
+        - ``async``: 默认模式，非阻塞
+        - ``blocking``: 同步阻塞模式
+    :param path: event loop
+
     """
 
     def __init__(
         self,
         *,
         mode: str = 'async',
-        path: str = '',
         loop: Optional[asyncio.AbstractEventLoop] = None,
         **kwargs
     ):
         self._mode = mode
-        self._path = path
         self._loop = loop or asyncio.get_event_loop()
         self.opts = kwargs
 
@@ -50,23 +62,6 @@ class Client(object):
         if mode not in ('async', 'blocking'):
             raise ValueError('Invalid running mode')
         self._mode = mode
-
-    @property
-    def path(self):
-        return self._path
-
-    @path.setter
-    def path(self, path):
-        self._path = path
-
-    def __getattr__(self, path):
-        self._path = "{}/{}".format(self._path, path)
-        return self
-
-    def __str__(self):
-        return self._path
-
-    __call__ = __getattr__
 
     @property
     def session(self):
