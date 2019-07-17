@@ -14,7 +14,7 @@ from aioweixin.errors import WeixinError
 from aioweixin.util import to_xml, to_dict, rand_str
 
 
-__all__ = ("WeixinPay", "Status", "TradeType")
+__all__ = ("WeixinPay", "Status", "TradeType", "BillType", "AccountType", "SignMethod")
 
 
 class Status(enum.Enum):
@@ -39,6 +39,11 @@ class AccountType(enum.Enum):
     BASIC = "Basic"
     OPERATION = "Operation"
     FEES = "Fees"
+
+
+class SignMethod(enum.Enum):
+    MD5 = "MD5"
+    HMAC_SHA256 = "HMAC-SHA256"
 
 
 class WeixinPay(Client):
@@ -102,20 +107,28 @@ class WeixinPay(Client):
     def nonce_str(self):
         return rand_str(32)
 
-    def sign(self, data, method="MD5"):
-        data = [(k, "{0}".format(v)) for k, v in sorted(data.keys())]
+    def sign(
+        self,
+        data: dict,
+        method: SignMethod = SignMethod.MD5
+    ) -> str:
+        data = [(k, "{0}".format(v)) for k, v in data.items()]
+        data.sort(key=lambda x: x[0])
         s = "&".join("=".join(kv) for kv in data if kv[1])
         s += "&key={0}".format(self._mch_key)
-        if method == "MD5":
-            return hashlib.md5(s.encode("utf-8")).hexdigest().upper()
-        return hmac.new(self._mch_key, s.encode("utf-8"), hashlib.sha256).hexdigest().upper()
+        enc = s.encode("utf-8")
+        if method == SignMethod.MD5:
+            return hashlib.md5(enc).hexdigest().upper()
+        elif method == SignMethod.HMAC_SHA256:
+            return hmac.new(self._mch_key, enc, hashlib.sha256).hexdigest().upper()
+        raise ValueError("invalid sign method")
 
     async def do(
         self,
         url: str,
         data: dict,
         *,
-        method: str = "MD5",
+        method: SignMethod = SignMethod.MD5
     ) -> Union[str, dict]:
         """
         构建请求并且解析响应
@@ -130,17 +143,16 @@ class WeixinPay(Client):
         """
         data.setdefault("nonce_str", self.nonce_str)
         data.setdefault("sign", self.sign(data, method))
-        if method != "MD5":
-            data.setdefault("sign_type", method)
-        async with self.session.post(url, data=data, ssl=self.ssl) as resp:
+        if method != SignMethod.MD5:
+            data.setdefault("sign_type", method.value)
+        async with self.session.post(url, data=to_xml(data), ssl=self.ssl) as resp:
             content = await resp.text()
-            content_type = resp.headers.get("Content-Type", "")
-            if xml not in content_type:
+            if "xml" not in content:
                 return content
             data = to_dict(content)
-            if data["return_code"] == Status.FAIL:
-                raise WeixinError(data["return_code"], data["return_msg"])
-            if data.get("result_code", "") == Status.FAIL:
+            if data["return_code"] == Status.FAIL.value:
+                raise WeixinError(data["return_code"], data.get("return_msg", data.get("retmsg", "")))
+            if data.get("result_code", "") == Status.FAIL.value:
                 raise WeixinError(data["result_code"], data["err_code_des"])
             return data
 
@@ -153,7 +165,7 @@ class WeixinPay(Client):
         :param ok: 成功或者失败
         """
         code = Status.SUCCESS if ok else Status.FAIL
-        return to_dict(dict(return_code=code, return_msg=msg))
+        return to_dict(dict(return_code=code.value, return_msg=msg))
 
     @runner
     async def sanbox(self):
@@ -168,12 +180,13 @@ class WeixinPay(Client):
         data = {"mch_id": self._mch_id}
         resp = await self.do(url, data)
         self._mch_key = resp["sandbox_signkey"]
+        return self
 
     @runner
     async def unified_order(
         self,
         out_trade_no: str,
-        trade_type: str,
+        trade_type: TradeType,
         total_fee: int,
         body: str,
         spbill_create_ip: str,
@@ -199,17 +212,17 @@ class WeixinPay(Client):
         :param product_id: 此参数为二维码中包含的商品ID,当 `trade_type` == `NATIVE` 时候必传
         """
         kwargs.setdefault("out_trade_no", out_trade_no)
-        kwargs.setdefault("trade_type", trade_type)
+        kwargs.setdefault("trade_type", trade_type.value)
         kwargs.setdefault("total_fee", total_fee)
         kwargs.setdefault("body", body)
         kwargs.setdefault("spbill_create_ip", spbill_create_ip)
         if trade_type == TradeType.JSAPI:
             if not openid:
-                raise WeixinError(Status.FAIL, "openid required")
+                raise WeixinError("FAIL", "openid required")
             kwargs.setdefault("openid", openid)
         elif trade_type == TradeType.NATIVE:
             if not product_id:
-                raise WeixinError(Status.FAIL, "product_id required")
+                raise WeixinError("FAIL", "product_id required")
             kwargs.setdefault("product_id", product_id)
 
         # 填写默认参数
@@ -285,7 +298,7 @@ class WeixinPay(Client):
         :param transaction_id: 微信订单号,参数需要二选一
         """
         if not out_trade_no and not transaction_id:
-            raise WeixinError(Status.FAIL, "out_trade_no or transaction_id required")
+            raise WeixinError("FAIL", "out_trade_no or transaction_id required")
 
         out_trade_no and kwargs.setdefault("out_trade_no", out_trade_no)
         transaction_id and kwargs.setdefault("transaction_id", transaction_id)
@@ -393,7 +406,7 @@ class WeixinPay(Client):
         refund_id and kwargs.setdefault("refund_id", refund_id)
         out_refund_no and kwargs.setdefault("out_refund_no", out_refund_no)
         if not kwargs:
-            raise WeixinError(Status.FAIL, "invalid argument")
+            raise WeixinError("FAIL", "invalid argument")
 
         url = self.API_HOST + "/pay/refundquery"
         kwargs.setdefault("appid", self._app_id)
@@ -404,7 +417,7 @@ class WeixinPay(Client):
     async def download_bill(
         self,
         bill_date: str,
-        bill_type: str = BillType.ALL,
+        bill_type: BillType = BillType.ALL,
         tar_type: Optional[str] = None,
     ) -> str:
         """
@@ -427,7 +440,7 @@ class WeixinPay(Client):
         """
         kwargs = {}
         kwargs.setdefault("bill_date", bill_date)
-        kwargs.setdefault("bill_type", bill_type)
+        kwargs.setdefault("bill_type", bill_type.value)
         tar_type and kwargs.setdefault("tar_type", tar_type)
 
         url = self.API_HOST + "/pay/downloadbill"
@@ -439,6 +452,7 @@ class WeixinPay(Client):
     async def download_fund_flow(
         self,
         bill_date: str,
+        account_type: AccountType = AccountType.BASIC,
         tar_type: Optional[str] = None,
     ) -> str:
         """
@@ -447,13 +461,15 @@ class WeixinPay(Client):
         `微信文档 <https://pay.weixin.qq.com/wiki/doc/api/app/app.php?chapter=9_18&index=9>`_
 
         :param bill_data: 账单日期
+        :param account_type: 账单的资金来源账户
         :param tar_type: 压缩类型，为空或者GZIP
         """
         kwargs = {}
         kwargs.setdefault("bill_date", bill_date)
+        kwargs.setdefault("account_type", account_type.value)
         tar_type and kwargs.setdefault("tar_type", tar_type)
 
         url = self.API_HOST + "/pay/downloadfundflow"
         kwargs.setdefault("appid", self._app_id)
         kwargs.setdefault("mch_id", self._mch_id)
-        return await self.do(url, kwargs, "HMAC-SHA256")
+        return await self.do(url, kwargs, method=SignMethod.HMAC_SHA256)

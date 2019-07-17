@@ -18,4 +18,4 @@ class WeixinError(Exception):
         self.message = msg
 
     def __str__(self):
-        return 'WeixinError<{}, {}>'.format_map(self.code, self.message)
+        return self.message

@@ -51,6 +51,7 @@ class Client(object):
     ):
         self._mode = mode
         self._loop = loop or asyncio.get_event_loop()
+        self._session = None
         self.opts = kwargs
 
     @property
