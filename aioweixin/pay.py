@@ -5,11 +5,11 @@ import ssl
 import enum
 import asyncio
 
-from typing import Optional
+from typing import Optional, Union
 
-from weixin.client import Client, runner
-from weixin.errors import WeixinError
-from weixin.util import to_xml, to_dict, rand_str
+from aioweixin.client import Client, runner
+from aioweixin.errors import WeixinError
+from aioweixin.util import to_xml, to_dict, rand_str
 
 
 __all__ = ("WeixinPay", "Status", "TradeType")
@@ -87,7 +87,22 @@ class WeixinPay(Client):
     def nonce_str(self):
         return rand_str(32)
 
-    async def do(self, url, data):
+    async def do(
+        self,
+        url: str,
+        data: dict,
+    ) -> Union[str, dict]:
+        """
+        构建请求并且解析响应
+
+        - 填充默认参数 `nonce_str`
+        - 自动签名, 并且填充 `sign` 参数
+        - 解析响应内容 `xml` 为 `dict`
+        - 判断响应是否出错，出错抛出后异常 :class:`aioweixin.errors.WeixinError`
+
+        :param url: 请求地址
+        :param data: 请求数据
+        """
         data.setdefault("nonce_str", self.nonce_str)
         data.setdefault("sign", self.sign(data))
         async with self.session.post(url, data=data, ssl=self.ssl) as resp:
@@ -165,6 +180,7 @@ class WeixinPay(Client):
         elif trade_type == TradeType.NATIVE:
             if not product_id:
                 raise WeixinError(Status.FAIL, "product_id required")
+            kwargs.setdefault("product_id", product_id)
 
         # 填写默认参数
         url = self.API_HOST + "/pay/unifiedorder"
