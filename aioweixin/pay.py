@@ -3,6 +3,8 @@
 
 import ssl
 import enum
+import hmac
+import hashlib
 import asyncio
 
 from typing import Optional, Union
@@ -24,6 +26,19 @@ class TradeType(enum.Enum):
     APP = "APP"
     JSAPI = "JSAPI"
     NATIVE = "NATIVE"
+
+
+class BillType(enum.Enum):
+    ALL = "ALL"
+    SUCCESS = "SUCCESS"
+    REFUND = "REFUND"
+    RECHARGE_REFUND = "RECHARGE_REFUND"
+
+
+class AccountType(enum.Enum):
+    BASIC = "Basic"
+    OPERATION = "Operation"
+    FEES = "Fees"
 
 
 class WeixinPay(Client):
@@ -87,10 +102,20 @@ class WeixinPay(Client):
     def nonce_str(self):
         return rand_str(32)
 
+    def sign(self, data, method="MD5"):
+        data = [(k, "{0}".format(v)) for k, v in sorted(data.keys())]
+        s = "&".join("=".join(kv) for kv in data if kv[1])
+        s += "&key={0}".format(self._mch_key)
+        if method == "MD5":
+            return hashlib.md5(s.encode("utf-8")).hexdigest().upper()
+        return hmac.new(self._mch_key, s.encode("utf-8"), hashlib.sha256).hexdigest().upper()
+
     async def do(
         self,
         url: str,
         data: dict,
+        *,
+        method: str = "MD5",
     ) -> Union[str, dict]:
         """
         构建请求并且解析响应
@@ -104,7 +129,9 @@ class WeixinPay(Client):
         :param data: 请求数据
         """
         data.setdefault("nonce_str", self.nonce_str)
-        data.setdefault("sign", self.sign(data))
+        data.setdefault("sign", self.sign(data, method))
+        if method != "MD5":
+            data.setdefault("sign_type", method)
         async with self.session.post(url, data=data, ssl=self.ssl) as resp:
             content = await resp.text()
             content_type = resp.headers.get("Content-Type", "")
@@ -132,6 +159,9 @@ class WeixinPay(Client):
     async def sanbox(self):
         """
         开启沙箱模式
+
+        `微信文档 <https://pay.weixin.qq.com/wiki/doc/api/jsapi.php?chapter=23_1>`_
+
         """
         self.API_HOST += "/sandboxnew"
         url = self.API_HOST + "/pay/getsignkey"
@@ -158,7 +188,7 @@ class WeixinPay(Client):
         除被扫支付场景以外，商户系统先调用该接口在微信支付服务后台生成预支付交易单，
         返回正确的预支付交易会话标识后再按扫码、JSAPI、APP等不同场景生成交易串调起支付。
 
-        https://pay.weixin.qq.com/wiki/doc/api/jsapi.php?chapter=9_1
+        `微信文档 <https://pay.weixin.qq.com/wiki/doc/api/jsapi.php?chapter=9_1>`_
 
         :param out_trade_no: 订单号
         :param trade_type: 订单类型
@@ -204,7 +234,7 @@ class WeixinPay(Client):
 
         :meth:`jsapi` 是对方法 :meth:`unified_order` 的包装
 
-        https://pay.weixin.qq.com/wiki/doc/api/jsapi.php?chapter=7_7&index=6
+        `微信文档 <https://pay.weixin.qq.com/wiki/doc/api/jsapi.php?chapter=7_7&index=6>`_
 
         :param out_trade_no: 订单号
         :param trade_type: 订单类型
@@ -242,7 +272,7 @@ class WeixinPay(Client):
 
         该接口提供所有微信支付订单的查询，商户可以通过查询订单接口主动查询订单状态，完成下一步的业务逻辑。
 
-        https://pay.weixin.qq.com/wiki/doc/api/jsapi.php?chapter=9_2
+        `微信文档 <https://pay.weixin.qq.com/wiki/doc/api/jsapi.php?chapter=9_2>`_
 
         需要调用查询接口的情况:
 
@@ -274,11 +304,16 @@ class WeixinPay(Client):
         """
         关闭订单
 
+        以下情况需要调用关单接口：商户订单支付失败需要生成新单号重新发起支付，要对原订单号调用关单，避免重复支付；系统下单后，用户支付超时，系统退出不再受理，避免用户继续，请调用关单接口。
+        **注意：订单生成后不能马上调用关单接口，最短调用时间间隔为5分钟。**
+
+        `微信文档 <https://api.mch.weixin.qq.com/secapi/pay/reverse>`_
+
         :param out_trade_no: 商户订单号
         """
         kwargs.setdefault("out_trade_no", out_trade_no)
 
-        url = self.API_HOST + "/pay/closeorder"
+        url = self.API_HOST + "/pay/reverse"
         kwargs.setdefault("appid", self._app_id)
         kwargs.setdefault("mch_id", self._mch_id)
         return await self.do(url, kwargs)
@@ -345,7 +380,7 @@ class WeixinPay(Client):
         提交退款申请后，通过调用该接口查询退款状态。退款有一定延时，
         用零钱支付的退款20分钟内到账，银行卡支付的退款3个工作日后重新查询退款状态。
 
-        https://pay.weixin.qq.com/wiki/doc/api/micropay.php?chapter=9_5
+        `微信文档 <https://pay.weixin.qq.com/wiki/doc/api/micropay.php?chapter=9_5>`
 
         :param refund_id: 退款id
         :param out_refund_no: 商户退款号
@@ -364,3 +399,61 @@ class WeixinPay(Client):
         kwargs.setdefault("appid", self._app_id)
         kwargs.setdefault("mch_id", self._mch_id)
         return await self.do(url, kwargs)
+
+    @runner
+    async def download_bill(
+        self,
+        bill_date: str,
+        bill_type: str = BillType.ALL,
+        tar_type: Optional[str] = None,
+    ) -> str:
+        """
+        下载对账单
+
+        商户可以通过该接口下载历史交易清单。比如掉单、系统错误等导致商户侧和微信侧数据不一致，通过对账单核对后可校正支付状态。
+
+        `微信文档 <https://pay.weixin.qq.com/wiki/doc/api/micropay.php?chapter=9_6>`_
+
+        注意:
+
+            1. 微信侧未成功下单的交易不会出现在对账单中。支付成功后撤销的交易会出现在对账单中，跟原支付单订单号一致；
+            2. 微信在次日9点启动生成前一天的对账单，建议商户10点后再获取；
+            3. 对账单中涉及金额的字段单位为“元”。
+            4. 对账单接口只能下载三个月以内的账单。
+
+        :param bill_data: 账单日期
+        :param bill_type: 账单类型
+        :param tar_type: 压缩类型，为空或者GZIP
+        """
+        kwargs = {}
+        kwargs.setdefault("bill_date", bill_date)
+        kwargs.setdefault("bill_type", bill_type)
+        tar_type and kwargs.setdefault("tar_type", tar_type)
+
+        url = self.API_HOST + "/pay/downloadbill"
+        kwargs.setdefault("appid", self._app_id)
+        kwargs.setdefault("mch_id", self._mch_id)
+        return await self.do(url, kwargs)
+
+    @runner
+    async def download_fund_flow(
+        self,
+        bill_date: str,
+        tar_type: Optional[str] = None,
+    ) -> str:
+        """
+        下载资金账单
+
+        `微信文档 <https://pay.weixin.qq.com/wiki/doc/api/app/app.php?chapter=9_18&index=9>`_
+
+        :param bill_data: 账单日期
+        :param tar_type: 压缩类型，为空或者GZIP
+        """
+        kwargs = {}
+        kwargs.setdefault("bill_date", bill_date)
+        tar_type and kwargs.setdefault("tar_type", tar_type)
+
+        url = self.API_HOST + "/pay/downloadfundflow"
+        kwargs.setdefault("appid", self._app_id)
+        kwargs.setdefault("mch_id", self._mch_id)
+        return await self.do(url, kwargs, "HMAC-SHA256")
