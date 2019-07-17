@@ -17,7 +17,7 @@ def rand_str(length):
 def to_dict(content):
     data = xmltodict.parse(content)
     for k in data:
-        return data[k]
+        return dict(data[k])
     return dict()
 
 

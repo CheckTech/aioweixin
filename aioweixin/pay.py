@@ -4,6 +4,8 @@
 import ssl
 import enum
 import hmac
+import time
+import logging
 import hashlib
 import asyncio
 
@@ -13,6 +15,8 @@ from aioweixin.client import Client, runner
 from aioweixin.errors import WeixinError
 from aioweixin.util import to_xml, to_dict, rand_str
 
+
+logger = logging.getLogger(__name__)
 
 __all__ = ("WeixinPay", "Status", "TradeType", "BillType", "AccountType", "SignMethod")
 
@@ -145,8 +149,10 @@ class WeixinPay(Client):
         data.setdefault("sign", self.sign(data, method))
         if method != SignMethod.MD5:
             data.setdefault("sign_type", method.value)
+        logger.debug("request url: %s, data: %s", url, data)
         async with self.session.post(url, data=to_xml(data), ssl=self.ssl) as resp:
             content = await resp.text()
+            logger.debug("response content: %s", content)
             if "xml" not in content:
                 return content
             data = to_dict(content)
@@ -269,7 +275,7 @@ class WeixinPay(Client):
         package = "prepay_id={0}".format(resp["prepay_id"])
         nonce_str = self.nonce_str
         timestamp = str(int(time.time()))
-        raw = dict(appId=self.app_id, timeStamp=timestamp, nonceStr=nonce_str, package=package, signType="MD5")
+        raw = dict(appId=self._app_id, timeStamp=timestamp, nonceStr=nonce_str, package=package, signType=SignMethod.MD5.value)
         raw['sign'] = self.sign(raw)
         return raw
 
@@ -300,6 +306,7 @@ class WeixinPay(Client):
         if not out_trade_no and not transaction_id:
             raise WeixinError("FAIL", "out_trade_no or transaction_id required")
 
+        kwargs = {}
         out_trade_no and kwargs.setdefault("out_trade_no", out_trade_no)
         transaction_id and kwargs.setdefault("transaction_id", transaction_id)
 
@@ -326,7 +333,7 @@ class WeixinPay(Client):
         """
         kwargs.setdefault("out_trade_no", out_trade_no)
 
-        url = self.API_HOST + "/pay/reverse"
+        url = self.API_HOST + "/pay/closeorder"
         kwargs.setdefault("appid", self._app_id)
         kwargs.setdefault("mch_id", self._mch_id)
         return await self.do(url, kwargs)
