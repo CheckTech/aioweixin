@@ -352,10 +352,13 @@ class WeixinPay(Client):
         :param out_trade_no: 商户订单号
         :param transaction_id: 微信订单号,参数需要四选一
         """
+        kwargs = {}
         out_trade_no and kwargs.setdefault("out_trade_no", out_trade_no)
         transaction_id and kwargs.setdefault("transaction_id", transaction_id)
         refund_id and kwargs.setdefault("refund_id", refund_id)
         out_refund_no and kwargs.setdefault("out_refund_no", out_refund_no)
+        if not kwargs:
+            raise WeixinError(Status.FAIL, "invalid argument")
 
         url = self.API_HOST + "/pay/refundquery"
         kwargs.setdefault("appid", self._app_id)
