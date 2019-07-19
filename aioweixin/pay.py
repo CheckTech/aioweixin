@@ -213,7 +213,7 @@ class WeixinPay(Client):
         url = FRAUD_HOST + "/risk/getpublickey"
         data = {"mch_id": self._mch_id, "sign_type": SignMethod.MD5.value}
         resp = await self.do(url, data)
-        return resp['pub_key']
+        return resp["pub_key"]
 
     async def _unified_order(
         self,
@@ -577,7 +577,7 @@ class WeixinPay(Client):
         :param partner_trade_no: 商户订单号，需保持唯一性
         """
 
-        kwargs = {'partner_trade_no': partner_trade_no}
+        kwargs = {"partner_trade_no": partner_trade_no}
 
         url = self.API_HOST + "/mmpaymkttransfers/gettransferinfo"
         kwargs.setdefault("appid", self._app_id)
@@ -608,9 +608,9 @@ class WeixinPay(Client):
         """
         kwargs = {}
         kwargs.setdefault("partner_trade_no", partner_trade_no)
-        kwargs.setdefault('enc_bank_no', enc_bank_no)
-        kwargs.setdefault('enc_true_name', enc_true_name)
-        kwargs.setdefault('bank_code', bank_code)
+        kwargs.setdefault("enc_bank_no", enc_bank_no)
+        kwargs.setdefault("enc_true_name", enc_true_name)
+        kwargs.setdefault("bank_code", bank_code)
         kwargs.setdefault("amount", amount)
         kwargs.setdefault("desc", desc)
 
@@ -630,7 +630,7 @@ class WeixinPay(Client):
         :param partner_trade_no: 商户订单号，需保持唯一性
         """
 
-        kwargs = {'partner_trade_no': partner_trade_no}
+        kwargs = {"partner_trade_no": partner_trade_no}
 
         url = self.API_HOST + "/mmpaysptrans/query_bank"
         kwargs.setdefault("appid", self._app_id)
