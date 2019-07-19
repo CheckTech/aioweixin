@@ -18,7 +18,8 @@ from aioweixin.util import to_xml, to_dict, rand_str
 
 logger = logging.getLogger(__name__)
 
-__all__ = ("WeixinPay", "Status", "TradeType", "BillType", "AccountType", "SignMethod")
+__all__ = ("WeixinPay", "Status", "TradeType", "BillType", "AccountType", "SignMethod",
+           "CheckName")
 
 
 class Status(enum.Enum):
@@ -50,6 +51,11 @@ class SignMethod(enum.Enum):
     HMAC_SHA256 = "HMAC-SHA256"
 
 
+class CheckName(enum.Enum):
+    NO_CHECK = "NO_CHECK"
+    FORCE_CHECK = "FORCE_CHECK"
+
+
 class WeixinPay(Client):
     """
     微信支付
@@ -65,6 +71,7 @@ class WeixinPay(Client):
     """
 
     API_HOST = "https://api.mch.weixin.qq.com"
+    FRAUD_HOST = "https://fraud.mch.weixin.qq.com"
 
     def __init__(
         self,
@@ -127,6 +134,27 @@ class WeixinPay(Client):
             return hmac.new(self._mch_key, enc, hashlib.sha256).hexdigest().upper()
         raise ValueError("invalid sign method")
 
+    def check(
+        self,
+        data: dict,
+    ) -> bool:
+        """
+        校验签名
+        """
+        sign = data.pop("sign")
+        return sign == self.sign(data)
+
+    @classmethod
+    def reply(cls, msg, ok=True):
+        """
+        回调函数回复微信支付的内容
+
+        :param msg: 回复消息
+        :param ok: 成功或者失败
+        """
+        code = Status.SUCCESS if ok else Status.FAIL
+        return to_dict(dict(return_code=code.value, return_msg=msg))
+
     async def do(
         self,
         url: str,
@@ -162,24 +190,14 @@ class WeixinPay(Client):
                 raise WeixinError(data["result_code"], data["err_code_des"])
             return data
 
-    @classmethod
-    def reply(cls, msg, ok=True):
-        """
-        回调函数回复微信支付的内容
-
-        :param msg: 回复消息
-        :param ok: 成功或者失败
-        """
-        code = Status.SUCCESS if ok else Status.FAIL
-        return to_dict(dict(return_code=code.value, return_msg=msg))
-
     @runner
     async def sanbox(self):
         """
         开启沙箱模式
 
-        `微信文档 <https://pay.weixin.qq.com/wiki/doc/api/jsapi.php?chapter=23_1>`_
+        沙箱模式金额只能用101, 102
 
+        `微信文档 <https://pay.weixin.qq.com/wiki/doc/api/jsapi.php?chapter=23_1>`_
         """
         self.API_HOST += "/sandboxnew"
         url = self.API_HOST + "/pay/getsignkey"
@@ -187,6 +205,48 @@ class WeixinPay(Client):
         resp = await self.do(url, data)
         self._mch_key = resp["sandbox_signkey"]
         return self
+
+    @runner
+    async def public_key(self) -> dict:
+        """
+        """
+        url = FRAUD_HOST + "/risk/getpublickey"
+        data = {"mch_id": self._mch_id, "sign_type": SignMethod.MD5.value}
+        resp = await self.do(url, data)
+        return resp['pub_key']
+
+    async def _unified_order(
+        self,
+        out_trade_no: str,
+        trade_type: TradeType,
+        total_fee: int,
+        body: str,
+        spbill_create_ip: str,
+        *,
+        openid: Optional[str] = None,
+        product_id: Optional[str] = None,
+        **kwargs,
+    ) -> dict:
+        kwargs.setdefault("out_trade_no", out_trade_no)
+        kwargs.setdefault("trade_type", trade_type.value)
+        kwargs.setdefault("total_fee", total_fee)
+        kwargs.setdefault("body", body)
+        kwargs.setdefault("spbill_create_ip", spbill_create_ip)
+        if trade_type == TradeType.JSAPI:
+            if not openid:
+                raise WeixinError("FAIL", "openid required")
+            kwargs.setdefault("openid", openid)
+        elif trade_type == TradeType.NATIVE:
+            if not product_id:
+                raise WeixinError("FAIL", "product_id required")
+            kwargs.setdefault("product_id", product_id)
+
+        # 填写默认参数
+        url = self.API_HOST + "/pay/unifiedorder"
+        kwargs.setdefault("appid", self._app_id)
+        kwargs.setdefault("mch_id", self._mch_id)
+        kwargs.setdefault("notify_url", self._notify_url)
+        return await self.do(url, kwargs)
 
     @runner
     async def unified_order(
@@ -217,26 +277,10 @@ class WeixinPay(Client):
         :param openid: 用户唯一id,当 `trade_type` == `JSAPI` 时候必传
         :param product_id: 此参数为二维码中包含的商品ID,当 `trade_type` == `NATIVE` 时候必传
         """
-        kwargs.setdefault("out_trade_no", out_trade_no)
-        kwargs.setdefault("trade_type", trade_type.value)
-        kwargs.setdefault("total_fee", total_fee)
-        kwargs.setdefault("body", body)
-        kwargs.setdefault("spbill_create_ip", spbill_create_ip)
-        if trade_type == TradeType.JSAPI:
-            if not openid:
-                raise WeixinError("FAIL", "openid required")
-            kwargs.setdefault("openid", openid)
-        elif trade_type == TradeType.NATIVE:
-            if not product_id:
-                raise WeixinError("FAIL", "product_id required")
-            kwargs.setdefault("product_id", product_id)
-
-        # 填写默认参数
-        url = self.API_HOST + "/pay/unifiedorder"
-        kwargs.setdefault("appid", self._app_id)
-        kwargs.setdefault("mch_id", self._mch_id)
-        kwargs.setdefault("notify_url", self._notify_url)
-        return await self.do(url, kwargs)
+        return self._unified_order(
+            out_trade_no, trade_type, total_fee, body, spbill_create_ip,
+            openid=openid, product_id=product_id, **kwargs
+        )
 
     @runner
     async def jsapi(
@@ -263,7 +307,7 @@ class WeixinPay(Client):
         :param openid: 用户唯一id
         """
 
-        resp = await self.unified_order(
+        resp = await self._unified_order(
             out_trade_no,
             TradeType.JSAPI,
             total_fee,
@@ -276,7 +320,7 @@ class WeixinPay(Client):
         nonce_str = self.nonce_str
         timestamp = str(int(time.time()))
         raw = dict(appId=self._app_id, timeStamp=timestamp, nonceStr=nonce_str, package=package, signType=SignMethod.MD5.value)
-        raw['sign'] = self.sign(raw)
+        raw["sign"] = self.sign(raw)
         return raw
 
     @runner
@@ -480,3 +524,115 @@ class WeixinPay(Client):
         kwargs.setdefault("appid", self._app_id)
         kwargs.setdefault("mch_id", self._mch_id)
         return await self.do(url, kwargs, method=SignMethod.HMAC_SHA256)
+
+    @runner
+    async def pay_pocket(
+        self,
+        partner_trade_no: str,
+        openid: str,
+        amount: int,
+        desc: str,
+        *,
+        check_name: CheckName = CheckName.NO_CHECK,
+        re_user_name: Optional[str] = None,
+        spbill_create_ip: Optional[str] = None,
+        **kwargs,
+    ) -> dict:
+        """
+        企业付款到零钱
+
+        `微信文档 <https://pay.weixin.qq.com/wiki/doc/api/tools/mch_pay.php?chapter=14_2>`_
+
+        :param partner_trade_no: 商户订单号，需保持唯一性
+        :param openid: 商户appid下，某用户的openid
+        :param amount: 金额,分
+        :param desc: 企业付款备注
+        :param re_user_name: 收款人真实姓名
+        :param check_name: 是否校验实名
+        :param spbill_create_ip: 可以为用户或者服务端ip
+        """
+        kwargs.setdefault("partner_trade_no", partner_trade_no)
+        kwargs.setdefault("openid", openid)
+        kwargs.setdefault("amount", amount)
+        kwargs.setdefault("desc", desc)
+        kwargs.setdefault("check_name", check_name.value)
+        re_user_name and kwargs.setdefault("re_user_name", re_user_name)
+        spbill_create_ip and kwargs.setdefault("spbill_create_ip", spbill_create_ip)
+
+        url = self.API_HOST + "/mmpaymkttransfers/promotion/transfers"
+        kwargs.setdefault("mch_appid", self._app_id)
+        kwargs.setdefault("mch_id", self._mch_id)
+        return await self.do(url, kwargs)
+
+    @runner
+    async def query_pocket(
+        self,
+        partner_trade_no: str,
+    ) -> dict:
+        """
+        查询企业付款到零钱
+
+        `微信文档 <https://pay.weixin.qq.com/wiki/doc/api/tools/mch_pay.php?chapter=14_3>`_
+
+        :param partner_trade_no: 商户订单号，需保持唯一性
+        """
+
+        kwargs = {'partner_trade_no': partner_trade_no}
+
+        url = self.API_HOST + "/mmpaymkttransfers/gettransferinfo"
+        kwargs.setdefault("appid", self._app_id)
+        kwargs.setdefault("mch_id", self._mch_id)
+        return await self.do(url, kwargs)
+
+    @runner
+    async def pay_bank(
+        self,
+        partner_trade_no: str,
+        enc_bank_no: str,
+        enc_true_name: str,
+        bank_code: str,
+        amount: int,
+        desc: str,
+    ) -> dict:
+        """
+        企业付款到银行卡
+
+        `微信文档 <https://pay.weixin.qq.com/wiki/doc/api/tools/mch_pay.php?chapter=24_2>`_
+
+        :param partner_trade_no: 商户订单号，需保持唯一性
+        :param enc_bank_no: 银行卡号, 需要rsa加密
+        :param enc_true_name: 收款方用户名, 需要rsa加密
+        :param bank_code: 银行卡所在开户行编号
+        :param amount: 金额, 分
+        :param desc: 企业付款备注
+        """
+        kwargs = {}
+        kwargs.setdefault("partner_trade_no", partner_trade_no)
+        kwargs.setdefault('enc_bank_no', enc_bank_no)
+        kwargs.setdefault('enc_true_name', enc_true_name)
+        kwargs.setdefault('bank_code', bank_code)
+        kwargs.setdefault("amount", amount)
+        kwargs.setdefault("desc", desc)
+
+        url = self.API_HOST + "/mmpaysptrans/pay_bank"
+        kwargs.setdefault("mch_id", self._mch_id)
+
+    @runner
+    async def query_bank(
+        self,
+        partner_trade_no: str,
+    ) -> dict:
+        """
+        查询企业付款到银行卡
+
+        `微信文档 <https://pay.weixin.qq.com/wiki/doc/api/tools/mch_pay.php?chapter=24_3>`_
+
+        :param partner_trade_no: 商户订单号，需保持唯一性
+        """
+
+        kwargs = {'partner_trade_no': partner_trade_no}
+
+        url = self.API_HOST + "/mmpaysptrans/query_bank"
+        kwargs.setdefault("appid", self._app_id)
+        kwargs.setdefault("mch_id", self._mch_id)
+        return await self.do(url, kwargs)
