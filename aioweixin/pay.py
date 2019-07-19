@@ -13,7 +13,7 @@ from typing import Optional, Union
 
 from aioweixin.client import Client, runner
 from aioweixin.errors import WeixinError
-from aioweixin.util import to_xml, to_dict, rand_str
+from aioweixin.utils import to_xml, to_dict, rand_str
 
 
 logger = logging.getLogger(__name__)

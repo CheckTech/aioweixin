@@ -31,13 +31,15 @@ class Client(object):
 
     ::
 
-        with Client('blocking') as client:
+        async with Client() as client:
             async with client.session.get('url', params={"user_id": 1}) as resp:
                 print(await resp.text())
 
     :param mode: 运行模式
+
         - ``async``: 默认模式，非阻塞
         - ``blocking``: 同步阻塞模式
+
     :param path: event loop
 
     """

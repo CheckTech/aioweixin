@@ -9,6 +9,7 @@ class WeixinError(Exception):
     微信错误信息
 
     ::
+
         raise WeixinError("fail", "invalid args")
     """
 
